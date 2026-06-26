@@ -1,0 +1,133 @@
+from apscheduler.schedulers.blocking import BlockingScheduler
+from ingestion.news_fetcher import fetch_headlines
+from ingestion.stock_fetcher import fetch_current_prices
+from ingestion.reddit_fetcher import fetch_reddit_posts
+from processing.sentiment import score_batch
+from processing.normalizer import normalize_articles
+from processing.correlator import compute_correlation
+from storage.postgres_client import save_scores, init_db
+from storage.redis_client import cache_score, publish_update
+from storage.mongo_client import save_raw_articles
+import pandas as pd
+import logging
+import sys
+import time
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+scheduler = BlockingScheduler()
+
+def wait_for_databases():
+    """Attempts to initialize DB services, retrying if they aren't ready yet."""
+    logging.info("Checking database readiness...")
+    
+    # Initialize Postgres tables
+    postgres_ready = False
+    for attempt in range(5):
+        if init_db():
+            postgres_ready = True
+            break
+        logging.warning(f"PostgreSQL not ready. Retrying in 3 seconds... ({attempt+1}/5)")
+        time.sleep(3)
+        
+    if not postgres_ready:
+        logging.error("Failed to initialize PostgreSQL. Continuing but database errors may occur.")
+
+def pipeline_job():
+    logging.info("Starting pipeline execution...")
+    
+    try:
+        # Step 1: Ingest from all sources
+        logging.info("Fetching articles and prices...")
+        news = fetch_headlines()
+        reddit = fetch_reddit_posts()
+        prices = fetch_current_prices()
+        
+        logging.info(f"Ingested {len(news)} news headlines and {len(reddit)} Reddit posts.")
+        logging.info(f"Ingested current stock prices for {len(prices)} symbols.")
+
+        # Step 2: Score articles and back up raw data
+        all_articles = news + reddit
+        if not all_articles:
+            logging.warning("No articles fetched in this run. Skipping processing.")
+            return
+
+        logging.info("Scoring sentiment on fetched content...")
+        scored = score_batch(all_articles)
+        
+        # Save raw articles to MongoDB
+        logging.info("Backing up raw articles to MongoDB...")
+        save_raw_articles(all_articles)
+
+        # Normalize articles into structured schema using Pandas
+        logging.info("Normalizing and cleaning article records...")
+        df = normalize_articles(scored)
+        
+        # Save structured scores to PostgreSQL
+        logging.info("Saving scores to PostgreSQL...")
+        save_scores(df.to_dict("records"))
+
+        # Step 3: Compute averages per ticker and cache/publish to Redis
+        logging.info("Updating Redis cache and publishing live feed...")
+        price_df = pd.DataFrame(prices)
+        
+        # For correlation calculation, we will query historical scores and prices.
+        # But for this instant job update, we can compute hourly averages and broadcast them.
+        for symbol in config.WATCHLIST:
+            # Filter articles mentioning this ticker
+            sym_df = df[df["mentioned_tickers"].apply(lambda t: symbol in t if isinstance(t, list) else False)]
+            
+            # Default sentiment is 0 (neutral) if no articles mention it in the current run
+            avg_score = 0.0
+            if not sym_df.empty:
+                avg_score = round(sym_df["sentiment"].apply(
+                    lambda x: x["compound"] if isinstance(x, dict) else 0.0
+                ).mean(), 4)
+                
+            # Get price info
+            symbol_price_data = price_df[price_df["symbol"] == symbol]
+            price_info = symbol_price_data.to_dict("records")[0] if not symbol_price_data.empty else {}
+
+            # Cache average sentiment and price data in Redis
+            cache_score(symbol, avg_score, price_data=price_info)
+            
+            # Prepare update payload
+            update_payload = {
+                "symbol": symbol,
+                "sentiment_score": avg_score,
+                "price": price_info.get("price", 0.0),
+                "change_pct": price_info.get("change_pct", 0.0),
+                "volume": price_info.get("volume", 0),
+                "timestamp": price_info.get("timestamp", "")
+            }
+            
+            # Publish to Redis channel
+            publish_update(update_payload)
+            
+        logging.info("Pipeline execution completed successfully.")
+        
+    except Exception as e:
+        logging.exception(f"Error in pipeline job: {e}")
+
+if __name__ == "__main__":
+    import config
+    
+    # Wait for databases to start up (if running in Docker environment)
+    wait_for_databases()
+    
+    # Run once immediately on startup
+    pipeline_job()
+    
+    # Start periodic scheduling
+    interval = config.PIPELINE_INTERVAL_MINUTES
+    logging.info(f"Starting scheduler. Pipeline runs every {interval} minutes.")
+    scheduler.add_job(pipeline_job, "interval", minutes=interval)
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Scheduler stopped.")
