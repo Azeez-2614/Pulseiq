@@ -12,6 +12,9 @@ import pandas as pd
 import logging
 import sys
 import time
+import config
+import redis as redis_lib
+import pymongo
 
 # Configure logging
 logging.basicConfig(
@@ -38,18 +41,54 @@ def wait_for_databases():
     if not postgres_ready:
         logging.error("Failed to initialize PostgreSQL. Continuing but database errors may occur.")
 
+    # Redis check
+    for attempt in range(5):
+        try:
+            r = redis_lib.Redis.from_url(config.REDIS_URL)
+            r.ping()
+            logging.info("Redis is ready.")
+            break
+        except Exception:
+            logging.warning(f"Redis not ready. Retrying... ({attempt+1}/5)")
+            time.sleep(3)
+
+    # MongoDB check
+    for attempt in range(5):
+        try:
+            client = pymongo.MongoClient(config.MONGO_URL, serverSelectionTimeoutMS=3000)
+            client.server_info()
+            logging.info("MongoDB is ready.")
+            break
+        except Exception:
+            logging.warning(f"MongoDB not ready. Retrying... ({attempt+1}/5)")
+            time.sleep(3)
+
 def pipeline_job():
     logging.info("Starting pipeline execution...")
     
     try:
         # Step 1: Ingest from all sources
         logging.info("Fetching articles and prices...")
-        news = fetch_headlines()
-        reddit = fetch_reddit_posts()
-        prices = fetch_current_prices()
-        
-        logging.info(f"Ingested {len(news)} news headlines and {len(reddit)} Reddit posts.")
-        logging.info(f"Ingested current stock prices for {len(prices)} symbols.")
+        try:
+            news = fetch_headlines()
+            logging.info(f"Fetched {len(news)} news headlines")
+        except Exception as e:
+            logging.warning(f"News fetch failed: {e}")
+            news = []
+
+        try:
+            reddit = fetch_reddit_posts()
+            logging.info(f"Fetched {len(reddit)} Reddit posts")
+        except Exception as e:
+            logging.warning(f"Reddit fetch failed: {e}")
+            reddit = []
+
+        try:
+            prices = fetch_current_prices()
+            logging.info(f"Fetched prices for {len(prices)} symbols")
+        except Exception as e:
+            logging.warning(f"Price fetch failed: {e}")
+            prices = []
 
         # Step 2: Score articles and back up raw data
         all_articles = news + reddit
@@ -115,8 +154,6 @@ def pipeline_job():
         logging.exception(f"Error in pipeline job: {e}")
 
 if __name__ == "__main__":
-    import config
-    
     # Wait for databases to start up (if running in Docker environment)
     wait_for_databases()
     
