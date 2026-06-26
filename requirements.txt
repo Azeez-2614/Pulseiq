@@ -20,3 +20,5 @@ vaderSentiment
 transformers
 torch
 python-dotenv
+pytest
+pytest-asyncio

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from datetime import datetime
 import sys
@@ -11,7 +12,12 @@ analyzer = SentimentIntensityAnalyzer()
 _finbert_pipeline = None
 
 def get_finbert_pipeline():
-    """Lazily loads the FinBERT pipeline to avoid startup delays when not in use."""
+    """
+    Lazily loads the FinBERT pipeline to avoid startup delays when not in use.
+
+    Returns:
+        The transformers classification pipeline, or "fallback" string on loading errors.
+    """
     global _finbert_pipeline
     if _finbert_pipeline is None:
         try:
@@ -23,11 +29,19 @@ def get_finbert_pipeline():
             _finbert_pipeline = "fallback"
     return _finbert_pipeline
 
-def score_text_vader(text: str) -> dict:
-    """Scores text using VADER analyzer."""
+def score_text_vader(text: str) -> dict[str, float | str]:
+    """
+    Scores a text string using the VADER sentiment analyzer.
+
+    Args:
+        text: Raw text to analyze (headline, article body, description).
+
+    Returns:
+        dict with keys: compound (-1.0 to 1.0), positive, negative, neutral, and label.
+    """
     scores = analyzer.polarity_scores(text)
     compound = scores["compound"]
-    label = "positive" if compound >= 0.05 else "negative" if compound <= -0.05 else "neutral"
+    label = "positive" if compound >= config.SENTIMENT_POSITIVE_THRESHOLD else "negative" if compound <= config.SENTIMENT_NEGATIVE_THRESHOLD else "neutral"
     return {
         "compound": round(compound, 4),
         "positive": round(scores["pos"], 4),
@@ -36,8 +50,17 @@ def score_text_vader(text: str) -> dict:
         "label": label
     }
 
-def score_text_finbert(text: str) -> dict:
-    """Scores text using ProsusAI/finbert model."""
+def score_text_finbert(text: str) -> dict[str, float | str]:
+    """
+    Scores a text string using the ProsusAI/finbert transformer model.
+    Falls back to VADER if FinBERT model fails to load or inference fails.
+
+    Args:
+        text: Raw text to analyze.
+
+    Returns:
+        dict with keys: compound, positive, negative, neutral, and label.
+    """
     pipeline_instance = get_finbert_pipeline()
     if pipeline_instance == "fallback":
         return score_text_vader(text)
@@ -63,15 +86,31 @@ def score_text_finbert(text: str) -> dict:
         print(f"Error running FinBERT inference: {e}. Falling back to VADER.")
         return score_text_vader(text)
 
-def score_text(text: str) -> dict:
-    """Scores text using the active model configured in config.py."""
+def score_text(text: str) -> dict[str, float | str]:
+    """
+    Scores text using the active model configured in config.py (FinBERT or VADER).
+
+    Args:
+        text: Raw text to analyze.
+
+    Returns:
+        dict with keys: compound, positive, negative, neutral, and label.
+    """
     if config.USE_FINBERT:
         return score_text_finbert(text)
     else:
         return score_text_vader(text)
 
 def score_article(article: dict) -> dict:
-    """Adds sentiment scores to a single article dictionary."""
+    """
+    Calculates sentiment scores on an article description/title and attaches results.
+
+    Args:
+        article: Dictionary containing article details (title, description, source).
+
+    Returns:
+        Updated dictionary with a 'sentiment' sub-dictionary and 'scored_at' timestamp.
+    """
     # Combine title and description for richer context
     text = f"{article.get('title', '')} {article.get('description', '')}"
     sentiment = score_text(text)
@@ -89,7 +128,15 @@ def score_article(article: dict) -> dict:
     }
 
 def score_batch(articles: list[dict]) -> list[dict]:
-    """Scores a batch of articles."""
+    """
+    Scores a list of articles in batch.
+
+    Args:
+        articles: A list of raw article dictionaries.
+
+    Returns:
+        A list of updated article dictionaries with scored sentiment metrics.
+    """
     return [score_article(a) for a in articles]
 
 if __name__ == "__main__":

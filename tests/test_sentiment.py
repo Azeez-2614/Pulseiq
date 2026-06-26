@@ -1,5 +1,31 @@
 from unittest.mock import patch, MagicMock
-from processing.sentiment import score_text_vader, score_text_finbert, score_batch
+from processing.sentiment import score_text, score_text_vader, score_text_finbert, score_article, score_batch
+
+def test_positive_sentiment():
+    result = score_text("Stock market surges to record highs, investors celebrate massive gains")
+    assert result["label"] == "positive"
+    assert result["compound"] > 0.05
+
+def test_negative_sentiment():
+    result = score_text("Market crashes, investors panic as stocks plummet to historic lows")
+    assert result["label"] == "negative"
+    assert result["compound"] < -0.05
+
+def test_neutral_sentiment():
+    result = score_text("The market opened today at the same level as yesterday")
+    assert result["label"] == "neutral"
+
+def test_empty_text():
+    result = score_text("")
+    assert "compound" in result
+    assert "label" in result
+
+def test_score_article_structure():
+    article = {"title": "Apple reports record earnings", "description": "Revenue up 15%"}
+    result = score_article(article)
+    assert "sentiment" in result
+    assert "scored_at" in result
+    assert "compound" in result["sentiment"]
 
 def test_score_text_vader_positive():
     result = score_text_vader("This stock is surging and doing incredibly well.")
