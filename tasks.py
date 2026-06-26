@@ -16,6 +16,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
+
 async def wait_for_databases_async() -> bool:
     """
     Checks readiness of PostgreSQL, Redis, and MongoDB asynchronously with retries.
@@ -27,14 +28,17 @@ async def wait_for_databases_async() -> bool:
         try:
             async with AsyncSessionLocal() as session:
                 from sqlalchemy import text
+
                 await session.execute(text("SELECT 1"))
             logger.info("PostgreSQL is ready.")
             postgres_ready = True
             break
         except Exception as e:
-            logger.warning(f"PostgreSQL not ready ({attempt+1}/{config.DB_RETRY_ATTEMPTS}): {e}")
+            logger.warning(
+                f"PostgreSQL not ready ({attempt + 1}/{config.DB_RETRY_ATTEMPTS}): {e}"
+            )
             await asyncio.sleep(config.DB_RETRY_DELAY_SECONDS)
-            
+
     # Check Redis
     redis_ready = False
     for attempt in range(config.DB_RETRY_ATTEMPTS):
@@ -46,28 +50,36 @@ async def wait_for_databases_async() -> bool:
             redis_ready = True
             break
         except Exception as e:
-            logger.warning(f"Redis not ready ({attempt+1}/{config.DB_RETRY_ATTEMPTS}): {e}")
+            logger.warning(
+                f"Redis not ready ({attempt + 1}/{config.DB_RETRY_ATTEMPTS}): {e}"
+            )
             await asyncio.sleep(config.DB_RETRY_DELAY_SECONDS)
-            
+
     # Check MongoDB
     mongo_ready = False
     for attempt in range(config.DB_RETRY_ATTEMPTS):
         try:
             from storage.mongo_client import client as mongo_client
-            await mongo_client.admin.command('ping')
+
+            await mongo_client.admin.command("ping")
             logger.info("MongoDB is ready.")
             mongo_ready = True
             break
         except Exception as e:
-            logger.warning(f"MongoDB not ready ({attempt+1}/{config.DB_RETRY_ATTEMPTS}): {e}")
+            logger.warning(
+                f"MongoDB not ready ({attempt + 1}/{config.DB_RETRY_ATTEMPTS}): {e}"
+            )
             await asyncio.sleep(config.DB_RETRY_DELAY_SECONDS)
-            
+
     return postgres_ready and redis_ready and mongo_ready
+
 
 async def run_pipeline_async(self) -> dict[str, str | int]:
     """Underlying asynchronous pipeline execution loop."""
-    logger.info(f"Pipeline async execution started — attempt {self.request.retries + 1}")
-    
+    logger.info(
+        f"Pipeline async execution started — attempt {self.request.retries + 1}"
+    )
+
     # Ensure databases are active
     databases_ok = await wait_for_databases_async()
     if not databases_ok:
@@ -125,20 +137,29 @@ async def run_pipeline_async(self) -> dict[str, str | int]:
         price_df = pd.DataFrame(prices)
         if not price_df.empty:
             for symbol in price_df["symbol"].unique():
-                sym_df = df[df["mentioned_tickers"].apply(lambda t: symbol in t if isinstance(t, list) else False)]
+                sym_df = df[
+                    df["mentioned_tickers"].apply(
+                        lambda t: symbol in t if isinstance(t, list) else False
+                    )
+                ]
                 if sym_df.empty:
                     continue
-                
+
                 avg_score = round(
-                    sym_df["sentiment"].apply(
-                        lambda x: x["compound"] if isinstance(x, dict) else 0
-                    ).mean(), 4
+                    sym_df["sentiment"]
+                    .apply(lambda x: x["compound"] if isinstance(x, dict) else 0)
+                    .mean(),
+                    4,
                 )
-                
+
                 # Fetch price info for this symbol
                 symbol_price_data = price_df[price_df["symbol"] == symbol]
-                price_info = symbol_price_data.to_dict("records")[0] if not symbol_price_data.empty else {}
-                
+                price_info = (
+                    symbol_price_data.to_dict("records")[0]
+                    if not symbol_price_data.empty
+                    else {}
+                )
+
                 # Prepare payload matching frontend schema
                 update_payload = {
                     "symbol": symbol,
@@ -146,9 +167,9 @@ async def run_pipeline_async(self) -> dict[str, str | int]:
                     "price": price_info.get("price", 0.0),
                     "change_pct": price_info.get("change_pct", 0.0),
                     "volume": price_info.get("volume", 0),
-                    "timestamp": price_info.get("timestamp", "")
+                    "timestamp": price_info.get("timestamp", ""),
                 }
-                
+
                 # Async cache & publish
                 await cache_score(symbol, avg_score, price_data=price_info)
                 await publish_update(update_payload)
@@ -160,7 +181,7 @@ async def run_pipeline_async(self) -> dict[str, str | int]:
 
         logger.info(f"Pipeline complete — {len(scored)} articles processed")
         return {"status": "success", "articles_processed": len(scored)}
-        
+
     except Exception as e:
         # Increment consecutive failure count
         try:
@@ -182,11 +203,9 @@ async def run_pipeline_async(self) -> dict[str, str | int]:
             )
         raise e
 
+
 @celery_app.task(
-    bind=True,
-    max_retries=3,
-    default_retry_delay=60,
-    name="tasks.run_pipeline"
+    bind=True, max_retries=3, default_retry_delay=60, name="tasks.run_pipeline"
 )
 def run_pipeline(self):
     """Synchronous entrypoint Celery task spawning the asyncio event loop."""

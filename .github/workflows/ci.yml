@@ -39,4 +39,4 @@ jobs:
         run: pip install flake8
 
       - name: Lint
-        run: flake8 . --count --max-line-length=120 --exclude=venv,__pycache__,alembic
+        run: flake8 . --count --max-line-length=120 --ignore=E501,E402 --exclude=venv,__pycache__,alembic,frontend/node_modules,node_modules

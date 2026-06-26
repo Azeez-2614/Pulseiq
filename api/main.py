@@ -26,7 +26,7 @@ app = FastAPI(
     version="2.0.0",
     description="Real-time market sentiment intelligence API",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
 )
 
 app.state.limiter = limiter
@@ -42,6 +42,7 @@ app.add_middleware(
     allow_headers=["X-API-Key", "Content-Type"],
 )
 
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -51,26 +52,26 @@ async def add_security_headers(request: Request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
+
 @app.get("/health", tags=["System"])
 async def health_check():
     """Public health endpoint — no auth required."""
     return {"status": "ok", "version": "2.0.0"}
 
+
 @app.get("/scores", tags=["Sentiment"])
 @limiter.limit("60/minute")
 async def get_all_scores_endpoint(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
+    request: Request, api_key: str = Depends(verify_api_key)
 ):
     """Returns current sentiment scores for all tracked symbols."""
     return await get_all_scores()
 
+
 @app.get("/scores/{symbol}", tags=["Sentiment"])
 @limiter.limit("60/minute")
 async def get_symbol_score(
-    symbol: str,
-    request: Request,
-    api_key: str = Depends(verify_api_key)
+    symbol: str, request: Request, api_key: str = Depends(verify_api_key)
 ):
     """Returns sentiment score for a single validated symbol."""
     clean_symbol = validate_symbol(symbol)
@@ -78,24 +79,24 @@ async def get_symbol_score(
     if not data:
         return JSONResponse(
             status_code=404,
-            content={"error": f"No cached data for {clean_symbol}. Pipeline may not have run yet."}
+            content={
+                "error": f"No cached data for {clean_symbol}. Pipeline may not have run yet."
+            },
         )
     return data
 
+
 @app.get("/articles", tags=["Content"])
 @limiter.limit("30/minute")
-async def get_articles(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
+async def get_articles(request: Request, api_key: str = Depends(verify_api_key)):
     """Returns 50 most recent scored articles."""
     return await get_recent_articles(limit=50)
+
 
 @app.get("/correlation", tags=["Correlation"])
 @limiter.limit("30/minute")
 async def get_dynamic_correlation(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
+    request: Request, api_key: str = Depends(verify_api_key)
 ):
     """
     Dynamically queries historical sentiment scores from PostgreSQL,
@@ -106,27 +107,32 @@ async def get_dynamic_correlation(
             # 1. Fetch sentiment scores from database (last 7 days)
             limit_date = datetime.utcnow() - timedelta(days=7)
             from sqlalchemy import select
-            stmt = select(SentimentScore).where(SentimentScore.published_at >= limit_date)
+
+            stmt = select(SentimentScore).where(
+                SentimentScore.published_at >= limit_date
+            )
             result = await session.execute(stmt)
             db_scores = result.scalars().all()
-            
+
             if not db_scores:
                 return JSONResponse(
                     status_code=404,
                     content={
                         "error": "Not enough historical sentiment data in PostgreSQL database. Run the pipeline first.",
-                        "data_points_found": 0
-                    }
+                        "data_points_found": 0,
+                    },
                 )
-                
+
             # Convert DB rows to DataFrame
             scores_list = []
             for s in db_scores:
-                scores_list.append({
-                    "published_at": s.published_at,
-                    "mentioned_tickers": [s.symbol],
-                    "sentiment": s.raw_scores
-                })
+                scores_list.append(
+                    {
+                        "published_at": s.published_at,
+                        "mentioned_tickers": [s.symbol],
+                        "sentiment": s.raw_scores,
+                    }
+                )
             sentiment_df = pd.DataFrame(scores_list)
 
             # 2. Fetch historical prices from yfinance or generate mock prices
@@ -138,30 +144,40 @@ async def get_dynamic_correlation(
                     if not hist.empty:
                         first_open = hist.iloc[0]["Open"]
                         for timestamp, row in hist.iterrows():
-                            pct_change = ((row["Close"] - first_open) / first_open) * 100 if first_open != 0 else 0.0
-                            prices_list.append({
-                                "symbol": symbol,
-                                "timestamp": timestamp.to_pydatetime(),
-                                "change_pct": round(pct_change, 2)
-                            })
+                            pct_change = (
+                                ((row["Close"] - first_open) / first_open) * 100
+                                if first_open != 0
+                                else 0.0
+                            )
+                            prices_list.append(
+                                {
+                                    "symbol": symbol,
+                                    "timestamp": timestamp.to_pydatetime(),
+                                    "change_pct": round(pct_change, 2),
+                                }
+                            )
                     else:
                         now = datetime.utcnow()
                         for h in range(120):
                             ts = now - timedelta(hours=h)
-                            prices_list.append({
-                                "symbol": symbol,
-                                "timestamp": ts,
-                                "change_pct": round(1.5 * (h % 5) - 3.0, 2)
-                            })
+                            prices_list.append(
+                                {
+                                    "symbol": symbol,
+                                    "timestamp": ts,
+                                    "change_pct": round(1.5 * (h % 5) - 3.0, 2),
+                                }
+                            )
                 except Exception:
                     now = datetime.utcnow()
                     for h in range(120):
                         ts = now - timedelta(hours=h)
-                        prices_list.append({
-                            "symbol": symbol,
-                            "timestamp": ts,
-                            "change_pct": round(1.2 * (h % 6) - 2.5, 2)
-                        })
+                        prices_list.append(
+                            {
+                                "symbol": symbol,
+                                "timestamp": ts,
+                                "change_pct": round(1.2 * (h % 6) - 2.5, 2),
+                            }
+                        )
 
             price_df = pd.DataFrame(prices_list)
 
@@ -170,35 +186,33 @@ async def get_dynamic_correlation(
             return {
                 "status": "success",
                 "time_window": "7 days",
-                "correlations": correlations
+                "correlations": correlations,
             }
     except Exception as e:
         logger.exception("Error calculating dynamic correlation")
         return JSONResponse(
-            status_code=500,
-            content={"error": f"Calculations failed: {str(e)}"}
+            status_code=500, content={"error": f"Calculations failed: {str(e)}"}
         )
+
 
 @app.post("/pipeline/trigger", tags=["System"])
 @limiter.limit("5/minute")
-async def trigger_pipeline(
-    request: Request,
-    api_key: str = Depends(verify_api_key)
-):
+async def trigger_pipeline(request: Request, api_key: str = Depends(verify_api_key)):
     """Triggers the ingestion and processing pipeline as an asynchronous Celery background task."""
     try:
         task = run_pipeline.delay()
         return {
             "status": "pipeline triggered",
             "task_id": task.id,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
         }
     except Exception as e:
         logger.error(f"Failed to enqueue Celery task: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Could not trigger background worker: {e}"}
+            content={"error": f"Could not trigger background worker: {e}"},
         )
+
 
 @app.websocket("/ws/live")
 async def websocket_live(websocket: WebSocket):

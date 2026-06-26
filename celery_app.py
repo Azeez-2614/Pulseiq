@@ -2,10 +2,7 @@ from celery import Celery
 import config
 
 celery_app = Celery(
-    "pulseiq",
-    broker=config.REDIS_URL,
-    backend=config.REDIS_URL,
-    include=["tasks"]
+    "pulseiq", broker=config.REDIS_URL, backend=config.REDIS_URL, include=["tasks"]
 )
 
 celery_app.conf.update(
@@ -22,5 +19,5 @@ celery_app.conf.update(
             "task": "tasks.run_pipeline",
             "schedule": 300.0,
         }
-    }
+    },
 )

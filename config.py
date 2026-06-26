@@ -8,7 +8,9 @@ load_dotenv()
 WATCHLIST = ["AAPL", "TSLA", "GOOGL", "MSFT", "AMZN"]
 
 # Database Configurations
-POSTGRES_URL = os.getenv("POSTGRES_URL", "postgresql://postgres:postgres@localhost:5432/pulseiq")
+POSTGRES_URL = os.getenv(
+    "POSTGRES_URL", "postgresql://postgres:postgres@localhost:5432/pulseiq"
+)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017/")
 

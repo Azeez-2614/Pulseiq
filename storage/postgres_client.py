@@ -7,7 +7,9 @@ from datetime import datetime
 
 Base = declarative_base()
 
-DATABASE_URL = os.getenv("POSTGRES_URL", "postgresql+asyncpg://postgres:postgres@localhost/pulseiq")
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgresql+asyncpg://postgres:postgres@localhost/pulseiq"
+)
 
 # Force asyncpg if default URL is passed
 if DATABASE_URL.startswith("postgresql://"):
@@ -15,6 +17,7 @@ if DATABASE_URL.startswith("postgresql://"):
 
 engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
 
 class SentimentScore(Base):
     __tablename__ = "sentiment_scores"
@@ -28,6 +31,7 @@ class SentimentScore(Base):
     scored_at = Column(DateTime)
     raw_scores = Column(JSON)
 
+
 async def save_scores(scored_articles: list[dict]):
     """Asynchronously saves or updates scores in PostgreSQL using upsert (merge)."""
     async with AsyncSessionLocal() as session:
@@ -36,10 +40,10 @@ async def save_scores(scored_articles: list[dict]):
                 symbols = article.get("mentioned_tickers", ["GENERAL"])
                 if not symbols:
                     symbols = ["GENERAL"]
-                    
+
                 title = article.get("title", "")
                 title_hash = hashlib.md5(title.encode("utf-8")).hexdigest()
-                
+
                 # published_at and scored_at handling (string to datetime)
                 pub_at = article.get("published_at")
                 if isinstance(pub_at, str):
@@ -49,7 +53,7 @@ async def save_scores(scored_articles: list[dict]):
                         pub_at = datetime.utcnow()
                 elif pub_at is None:
                     pub_at = datetime.utcnow()
-                    
+
                 sc_at = article.get("scored_at")
                 if isinstance(sc_at, str):
                     try:
@@ -70,13 +74,14 @@ async def save_scores(scored_articles: list[dict]):
                         label=article["sentiment"]["label"],
                         published_at=pub_at,
                         scored_at=sc_at,
-                        raw_scores=article["sentiment"]
+                        raw_scores=article["sentiment"],
                     )
                     await session.merge(row)
             await session.commit()
         except Exception as e:
             await session.rollback()
             raise e
+
 
 async def init_db():
     """Initializes tables for PostgreSQL."""
