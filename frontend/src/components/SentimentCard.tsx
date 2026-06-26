@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 
@@ -19,11 +19,6 @@ export default function SentimentCard({
   price,
   change_pct,
 }: SentimentCardProps) {
-  const [prevScore, setPrevScore] = useState(score);
-
-  useEffect(() => {
-    setPrevScore(score);
-  }, [score]);
 
   const isPosSentiment = label.toLowerCase() === "positive" || score >= 0.05;
   const isNegSentiment = label.toLowerCase() === "negative" || score <= -0.05;

@@ -13,7 +13,8 @@ export function useWebSocket(url: string) {
   const [data, setData] = useState<SentimentUpdate | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeout = useRef<any>(null); // Use any or ReturnType<typeof setTimeout> to support server/client environment safely
+  const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectRef = useRef<() => void>(() => {});
 
   const connect = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -45,7 +46,7 @@ export function useWebSocket(url: string) {
         console.log('WebSocket connection closed. Reconnecting in 3 seconds...');
         // Auto-reconnect after 3 seconds
         if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
-        reconnectTimeout.current = setTimeout(connect, 3000);
+        reconnectTimeout.current = setTimeout(() => connectRef.current(), 3000);
       };
 
       wsRef.current.onerror = (error) => {
@@ -55,12 +56,16 @@ export function useWebSocket(url: string) {
     } catch (err) {
       console.error('WebSocket setup failure:', err);
       if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
-      reconnectTimeout.current = setTimeout(connect, 3000);
+      reconnectTimeout.current = setTimeout(() => connectRef.current(), 3000);
     }
   }, [url]);
 
   useEffect(() => {
-    connect();
+    connectRef.current = connect;
+  }, [connect]);
+
+  useEffect(() => {
+    connectRef.current();
     return () => {
       if (reconnectTimeout.current) {
         clearTimeout(reconnectTimeout.current);
@@ -69,7 +74,7 @@ export function useWebSocket(url: string) {
         wsRef.current.close();
       }
     };
-  }, [connect]);
+  }, []);
 
   return { data, isConnected };
 }

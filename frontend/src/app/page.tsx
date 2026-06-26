@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Play, Sparkles, RefreshCw, AlertTriangle } from "lucide-react";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { fetchScores, fetchArticles, fetchCorrelation } from "@/lib/api";
+import { fetchScores, fetchArticles, fetchCorrelation, API_KEY } from "@/lib/api";
 import Header from "@/components/Header";
 import SentimentCard from "@/components/SentimentCard";
 import LiveChart from "@/components/LiveChart";
@@ -66,6 +66,80 @@ export default function Dashboard() {
   // WebSocket connection using our custom hook
   const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/live";
   const { data: wsData, isConnected } = useWebSocket(wsUrl);
+
+  // Load initial scores, articles and correlations from API
+  const loadInitialData = async () => {
+    try {
+      const rawScores = await fetchScores();
+      const initialTickers: Record<string, TickerInfo> = {};
+      
+      Object.keys(rawScores).forEach((sym) => {
+        const item = rawScores[sym];
+        const score = item.sentiment_score !== undefined ? item.sentiment_score : (item.score || 0.0);
+        const label = score >= 0.05 ? "positive" : score <= -0.05 ? "negative" : "neutral";
+        initialTickers[sym] = {
+          symbol: sym,
+          price: item.price || 0.0,
+          change_pct: item.change_pct || 0.0,
+          sentiment_score: score,
+          label,
+        };
+      });
+      setTickers(initialTickers);
+
+      const rawArticles = await fetchArticles();
+      setArticles(rawArticles);
+
+      const correlationRes = await fetchCorrelation();
+      if (correlationRes && correlationRes.correlations) {
+        setCorrelations(correlationRes.correlations);
+      }
+    } catch (err) {
+      console.error("Failed to load dashboard data:", err);
+    }
+  };
+
+  // Poll-based updates for tables and scrolling articles list
+  const refreshData = async () => {
+    try {
+      const rawArticles = await fetchArticles();
+      setArticles(rawArticles);
+
+      const correlationRes = await fetchCorrelation();
+      if (correlationRes && correlationRes.correlations) {
+        setCorrelations(correlationRes.correlations);
+      }
+    } catch (err) {
+      console.warn("Polling update failed:", err);
+    }
+  };
+
+  // Trigger manual background task execution
+  const runPipeline = async () => {
+    setIsTriggering(true);
+    setTriggerStatus("Requesting ingestion...");
+    try {
+      const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const response = await fetch(`${apiBase}/pipeline/trigger`, {
+        method: "POST",
+        headers: { "X-API-Key": API_KEY }
+      });
+      if (response.ok) {
+        await response.json();
+        setTriggerStatus("Pipeline running in background.");
+        setTimeout(() => setTriggerStatus(null), 4000);
+      } else {
+        setTriggerStatus("Trigger failed.");
+        setTimeout(() => setTriggerStatus(null), 4000);
+      }
+    } catch (err) {
+      console.error("Pipeline trigger error:", err);
+      setTriggerStatus("Network error connecting to API.");
+      setTimeout(() => setTriggerStatus(null), 4000);
+    } finally {
+      setIsTriggering(false);
+    }
+  };
 
   // Setup initial mock history for Recharts to avoid blank start
   const generateInitialHistory = (): ChartPoint[] => {
@@ -142,76 +216,6 @@ export default function Dashboard() {
       });
     }
   }, [wsData]);
-
-  // Load initial scores, articles and correlations from API
-  const loadInitialData = async () => {
-    try {
-      const rawScores = await fetchScores();
-      const initialTickers: Record<string, TickerInfo> = {};
-      
-      Object.keys(rawScores).forEach((sym) => {
-        const item = rawScores[sym];
-        const score = item.sentiment_score !== undefined ? item.sentiment_score : (item.score || 0.0);
-        const label = score >= 0.05 ? "positive" : score <= -0.05 ? "negative" : "neutral";
-        initialTickers[sym] = {
-          symbol: sym,
-          price: item.price || 0.0,
-          change_pct: item.change_pct || 0.0,
-          sentiment_score: score,
-          label,
-        };
-      });
-      setTickers(initialTickers);
-
-      const rawArticles = await fetchArticles();
-      setArticles(rawArticles);
-
-      const correlationRes = await fetchCorrelation();
-      if (correlationRes && correlationRes.correlations) {
-        setCorrelations(correlationRes.correlations);
-      }
-    } catch (err) {
-      console.error("Failed to load dashboard data:", err);
-    }
-  };
-
-  // Poll-based updates for tables and scrolling articles list
-  const refreshData = async () => {
-    try {
-      const rawArticles = await fetchArticles();
-      setArticles(rawArticles);
-
-      const correlationRes = await fetchCorrelation();
-      if (correlationRes && correlationRes.correlations) {
-        setCorrelations(correlationRes.correlations);
-      }
-    } catch (err) {
-      console.warn("Polling update failed:", err);
-    }
-  };
-
-  // Trigger manual background task execution
-  const runPipeline = async () => {
-    setIsTriggering(true);
-    setTriggerStatus("Requesting ingestion...");
-    try {
-      const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const response = await fetch(`${apiBase}/pipeline/trigger`, { method: "POST" });
-      if (response.ok) {
-        const resData = await response.json();
-        setTriggerStatus("Pipeline running in background.");
-        setTimeout(() => setTriggerStatus(null), 4000);
-      } else {
-        setTriggerStatus("Trigger failed.");
-        setTimeout(() => setTriggerStatus(null), 4000);
-      }
-    } catch (err) {
-      setTriggerStatus("Network error connecting to API.");
-      setTimeout(() => setTriggerStatus(null), 4000);
-    } finally {
-      setIsTriggering(false);
-    }
-  };
 
   // Calculate stats for footer
   const processedCount = articles.length + 120; // adding constant base for display authenticity

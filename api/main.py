@@ -1,276 +1,209 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
-import asyncio
 import logging
+import os
 
-# Import local layers
-from storage.redis_client import get_redis_client, get_all_scores, get_cached_score, CHANNEL
-from storage.postgres_client import get_session, SentimentScore
+# Import async clients & models
+from storage.redis_client import get_redis, get_all_scores, get_cached_score, CHANNEL
+from storage.postgres_client import AsyncSessionLocal, SentimentScore
+from storage.mongo_client import get_recent_articles
 from processing.correlator import compute_correlation
-from processing.pipeline import pipeline_job, wait_for_databases
+from api.security import verify_api_key
+from tasks import run_pipeline
 import config
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("PulseIQ-API")
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="PulseIQ API",
     description="Real-Time Market Sentiment & Stock Intelligence REST + WebSocket API",
-    version="1.0"
+    version="2.0"
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# Configure CORS (allow both GET and POST requests from the Next.js frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:3000")],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
-# REST Endpoints
-
-@app.get("/health")
-def health():
-    """Service health check."""
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+@app.on_event("startup")
+async def startup():
+    # Database migration checks can run asynchronously.
+    # Alembic handles the schema migrations now, but we can verify basic readiness.
+    logger.info("PulseIQ API started successfully.")
 
 @app.get("/scores")
-def get_scores():
-    """Returns current sentiment scores for all tracked symbols cached in Redis."""
-    scores = get_all_scores()
-    # If cache is empty, return initial empty scores dictionary
+@limiter.limit("60/minute")
+async def get_scores(request: Request, api_key: str = Depends(verify_api_key)):
+    """Returns current average sentiment scores and stock prices cached in Redis."""
+    scores = await get_all_scores()
     if not scores:
         return {symbol: {"symbol": symbol, "score": 0.0} for symbol in config.WATCHLIST}
     return scores
 
 @app.get("/scores/{symbol}")
-def get_symbol_score(symbol: str):
-    """Returns cached sentiment score for a single symbol."""
-    data = get_cached_score(symbol.upper())
+@limiter.limit("60/minute")
+async def get_symbol_score(symbol: str, request: Request, api_key: str = Depends(verify_api_key)):
+    """Returns cached sentiment score and details for a single symbol."""
+    data = await get_cached_score(symbol.upper())
     if not data:
         return {"error": f"No data cached for symbol {symbol.upper()}"}
     return data
 
+@app.get("/articles")
+@limiter.limit("30/minute")
+async def get_latest_articles(request: Request, api_key: str = Depends(verify_api_key)):
+    """Returns recently stored raw articles from MongoDB."""
+    return await get_recent_articles(limit=50)
+
 @app.get("/correlation")
-def get_dynamic_correlation():
+@limiter.limit("30/minute")
+async def get_dynamic_correlation(request: Request, api_key: str = Depends(verify_api_key)):
     """
-    Dynamically queries historical sentiment scores from PostgreSQL and 
-    historical stock price changes from yfinance, aligns them, and computes
-    their Pearson correlation.
+    Dynamically queries historical sentiment scores from PostgreSQL,
+    aligns them, fetches stock price variations, and computes Pearson correlations.
     """
     try:
-        session = get_session()
-    except Exception as e:
-        return {"error": f"Could not connect to PostgreSQL database: {str(e)}"}
-
-    try:
-        # 1. Fetch sentiment scores from database (last 7 days)
-        limit_date = datetime.utcnow() - timedelta(days=7)
-        db_scores = session.query(SentimentScore).filter(
-            SentimentScore.published_at >= limit_date
-        ).all()
-        
-        if not db_scores:
-            return {
-                "error": "Not enough historical sentiment data in PostgreSQL database. Run the scheduler pipeline first.",
-                "data_points_found": 0
-            }
+        # Use async session context manager
+        async with AsyncSessionLocal() as session:
+            # 1. Fetch sentiment scores from database (last 7 days)
+            limit_date = datetime.utcnow() - timedelta(days=7)
+            from sqlalchemy import select
+            stmt = select(SentimentScore).where(SentimentScore.published_at >= limit_date)
+            result = await session.execute(stmt)
+            db_scores = result.scalars().all()
             
-        # Convert DB rows to DataFrame
-        scores_list = []
-        for s in db_scores:
-            scores_list.append({
-                "published_at": s.published_at,
-                "mentioned_tickers": [s.symbol],
-                "sentiment": s.raw_scores
-            })
-        sentiment_df = pd.DataFrame(scores_list)
+            if not db_scores:
+                return {
+                    "error": "Not enough historical sentiment data in PostgreSQL database. Run the pipeline first.",
+                    "data_points_found": 0
+                }
+                
+            # Convert DB rows to DataFrame
+            scores_list = []
+            for s in db_scores:
+                scores_list.append({
+                    "published_at": s.published_at,
+                    "mentioned_tickers": [s.symbol],
+                    "sentiment": s.raw_scores
+                })
+            sentiment_df = pd.DataFrame(scores_list)
 
-        # 2. Fetch historical prices from yfinance or generate mock prices
-        prices_list = []
-        for symbol in config.WATCHLIST:
-            try:
-                # Fetch hourly stock data for the last 5 days
-                ticker = yf.Ticker(symbol)
-                hist = ticker.history(period="5d", interval="1h")
-                if not hist.empty:
-                    # Calculate pct change relative to the first open in hist
-                    first_open = hist.iloc[0]["Open"]
-                    for timestamp, row in hist.iterrows():
-                        pct_change = ((row["Close"] - first_open) / first_open) * 100 if first_open != 0 else 0.0
-                        prices_list.append({
-                            "symbol": symbol,
-                            "timestamp": timestamp.to_pydatetime(),
-                            "change_pct": round(pct_change, 2)
-                        })
-                else:
-                    # If yfinance yields empty (closed markets/rate limit), add mock prices to correlate
+            # 2. Fetch historical prices from yfinance or generate mock prices
+            prices_list = []
+            for symbol in config.WATCHLIST:
+                try:
+                    # Fetch hourly stock data for the last 5 days
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period="5d", interval="1h")
+                    if not hist.empty:
+                        # Calculate pct change relative to the first open in hist
+                        first_open = hist.iloc[0]["Open"]
+                        for timestamp, row in hist.iterrows():
+                            pct_change = ((row["Close"] - first_open) / first_open) * 100 if first_open != 0 else 0.0
+                            prices_list.append({
+                                "symbol": symbol,
+                                "timestamp": timestamp.to_pydatetime(),
+                                "change_pct": round(pct_change, 2)
+                            })
+                    else:
+                        # Fallback mock prices
+                        now = datetime.utcnow()
+                        for h in range(120):
+                            ts = now - timedelta(hours=h)
+                            prices_list.append({
+                                "symbol": symbol,
+                                "timestamp": ts,
+                                "change_pct": round(1.5 * (h % 5) - 3.0, 2)
+                            })
+                except Exception:
                     now = datetime.utcnow()
-                    for h in range(120):  # 5 days hourly
+                    for h in range(120):
                         ts = now - timedelta(hours=h)
                         prices_list.append({
                             "symbol": symbol,
                             "timestamp": ts,
-                            "change_pct": round(1.5 * (h % 5) - 3.0, 2) # pseudo-random deterministic delta
+                            "change_pct": round(1.2 * (h % 6) - 2.5, 2)
                         })
-            except Exception:
-                # Fallback to mock prices on yfinance exception
-                now = datetime.utcnow()
-                for h in range(120):
-                    ts = now - timedelta(hours=h)
-                    prices_list.append({
-                        "symbol": symbol,
-                        "timestamp": ts,
-                        "change_pct": round(1.2 * (h % 6) - 2.5, 2)
-                    })
 
-        price_df = pd.DataFrame(prices_list)
+            price_df = pd.DataFrame(prices_list)
 
-        # 3. Compute Pearson correlation using processing correlator
-        correlations = compute_correlation(sentiment_df, price_df)
-        return {
-            "status": "success",
-            "time_window": "7 days",
-            "correlations": correlations
-        }
-
+            # 3. Compute Pearson correlation using processing correlator
+            correlations = compute_correlation(sentiment_df, price_df)
+            return {
+                "status": "success",
+                "time_window": "7 days",
+                "correlations": correlations
+            }
     except Exception as e:
         logger.exception("Error calculating dynamic correlation")
         return {"error": f"Calculations failed: {str(e)}"}
-    finally:
-        session.close()
-
-@app.get("/articles")
-def get_latest_articles(limit: int = 10):
-    """
-    Returns the latest scored articles from PostgreSQL.
-    If PostgreSQL has no articles or fails to connect, it falls back to generating mock articles on-the-fly.
-    """
-    try:
-        session = get_session()
-        db_scores = session.query(SentimentScore).order_by(
-            SentimentScore.published_at.desc()
-        ).limit(limit).all()
-        
-        if db_scores:
-            articles = []
-            for s in db_scores:
-                articles.append({
-                    "title": s.headline,
-                    "source": s.source,
-                    "published_at": s.published_at.isoformat() if s.published_at else "",
-                    "symbol": s.symbol,
-                    "sentiment": s.raw_scores or {"compound": 0.0, "label": "neutral"}
-                })
-            return articles
-    except Exception as e:
-        logger.error(f"PostgreSQL query in /articles failed: {e}")
-        # Fallback to mock generation if DB fails
-
-    # Return mock articles as fallback
-    try:
-        from ingestion.news_fetcher import generate_mock_headlines
-        from processing.sentiment import score_batch
-        from processing.normalizer import find_mentioned_tickers
-        
-        raw_mocks = generate_mock_headlines()
-        scored_mocks = score_batch(raw_mocks)
-        
-        articles = []
-        for a in scored_mocks[:limit]:
-            mentioned = find_mentioned_tickers(a["title"])
-            sym = mentioned[0] if mentioned else "GENERAL"
-            articles.append({
-                "title": a["title"],
-                "source": a["source"],
-                "published_at": a["published_at"],
-                "symbol": sym,
-                "sentiment": a["sentiment"]
-            })
-        return articles
-    except Exception as mock_err:
-        logger.error(f"Mock generation failed in /articles: {mock_err}")
-        return []
 
 @app.post("/pipeline/trigger")
-def trigger_pipeline(background_tasks: BackgroundTasks):
-    """Triggers the ingestion and processing pipeline as an asynchronous background task."""
-    background_tasks.add_task(pipeline_job)
-    return {"status": "pipeline triggered", "timestamp": datetime.utcnow().isoformat()}
+@limiter.limit("5/minute")
+async def trigger_pipeline(request: Request, api_key: str = Depends(verify_api_key)):
+    """Triggers the ingestion and processing pipeline as an asynchronous Celery background task."""
+    try:
+        task = run_pipeline.delay()
+        return {
+            "status": "pipeline triggered",
+            "task_id": task.id,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Failed to enqueue Celery task: {e}")
+        return {"error": f"Could not trigger background worker: {e}"}
 
-# WebSocket Broadcast Layer
-
-class WebSocketBroadcaster:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"New WebSocket client connected. Active: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logger.info(f"WebSocket client disconnected. Active: {len(self.active_connections)}")
-
-    async def broadcast_from_redis(self):
-        """Listens to Redis pub/sub channel and broadcasts messages to all connected WebSockets."""
-        try:
-            r = get_redis_client()
-            pubsub = r.pubsub()
-            pubsub.subscribe(CHANNEL)
-            logger.info(f"Subscribed to Redis pub/sub channel '{CHANNEL}' for WebSocket broadcasting.")
-        except Exception as e:
-            logger.error(f"Failed to subscribe to Redis for WebSockets: {e}")
-            return
-
-        while True:
-            try:
-                # Non-blocking check for messages (timeout of 0.5s to allow yielding control)
-                message = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
-                if message and self.active_connections:
-                    data_str = message["data"].decode("utf-8")
-                    # Broadcast to all active clients
-                    # Make a copy of connections to avoid modification errors during loop
-                    clients = list(self.active_connections)
-                    for client in clients:
-                        try:
-                            await client.send_text(data_str)
-                        except Exception:
-                            # Disconnected or failed to send, remove client
-                            self.disconnect(client)
-                await asyncio.sleep(0.05)
-            except Exception as e:
-                logger.error(f"Error in WebSocket broadcast loop: {e}")
-                await asyncio.sleep(2)
-
-broadcaster = WebSocketBroadcaster()
+@app.get("/health")
+async def health():
+    """Health check validating Redis availability."""
+    checks = {}
+    try:
+        r = await get_redis()
+        await r.ping()
+        await r.aclose()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "checks": checks
+    }
 
 @app.websocket("/ws/live")
-async def websocket_endpoint(websocket: WebSocket):
-    await broadcaster.connect(websocket)
+async def websocket_endpoint(ws: WebSocket):
+    """
+    Subscribes to Redis pub/sub channel and broadcasts messages to connected clients reactively.
+    This eliminates busy-waiting loops completely.
+    """
+    await ws.accept()
+    r = await get_redis()
+    pubsub = r.pubsub()
+    await pubsub.subscribe(CHANNEL)
     try:
-        # Keep connection open until client disconnects
-        while True:
-            await websocket.receive_text()
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                await ws.send_text(message["data"])
     except WebSocketDisconnect:
-        broadcaster.disconnect(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        broadcaster.disconnect(websocket)
-
-# Start background database checker and pubsub broadcaster when FastAPI starts up
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(broadcaster.broadcast_from_redis())
-    # Run database readiness checks in a background executor thread to prevent blocking the event loop
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, wait_for_databases)
+        pass
+    finally:
+        await pubsub.unsubscribe(CHANNEL)
+        await r.aclose()
 
 if __name__ == "__main__":
     import uvicorn

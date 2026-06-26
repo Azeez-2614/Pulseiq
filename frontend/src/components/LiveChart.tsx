@@ -13,7 +13,7 @@ import {
   Legend,
   Area,
 } from "recharts";
-import { LineChart as ChartIcon, Eye } from "lucide-react";
+import { LineChart as ChartIcon } from "lucide-react";
 
 interface HistoricalDataPoint {
   time: string;
@@ -27,9 +27,44 @@ interface HistoricalDataPoint {
   activeSymbolPrice?: number;
 }
 
+import { TooltipProps } from "recharts";
+import { NameType, ValueType } from "recharts/types/component/DefaultTooltipContent";
+
 interface LiveChartProps {
   data: HistoricalDataPoint[];
 }
+
+const formatXAxis = (tickItem: string) => {
+  try {
+    const date = new Date(tickItem);
+    if (isNaN(date.getTime())) return tickItem;
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return tickItem;
+  }
+};
+
+const CustomTooltip = ({ active, payload, label }: TooltipProps<ValueType, NameType>) => {
+  if (active && payload && payload.length) {
+    const timeStr = formatXAxis(label as string);
+    return (
+      <div className="glass rounded-xl p-4 shadow-xl border border-white/10 text-xs flex flex-col space-y-1.5 min-w-[150px]">
+        <span className="text-text-muted font-mono">{timeStr}</span>
+        {payload.map((p) => (
+          <div key={p.name} className="flex items-center justify-between space-x-4">
+            <span className="font-semibold text-text-secondary" style={{ color: p.color || p.fill }}>
+              {p.name}:
+            </span>
+            <span className="font-mono font-bold text-white">
+              {p.name && p.name.includes("Price") ? `$${Number(p.value).toFixed(2)}` : Number(p.value).toFixed(4)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return null;
+};
 
 export default function LiveChart({ data }: LiveChartProps) {
   const [selectedSymbol, setSelectedSymbol] = useState<string>("ALL");
@@ -42,40 +77,6 @@ export default function LiveChart({ data }: LiveChartProps) {
     GOOGL: "#34d399", // Emerald
     MSFT: "#fbbf24", // Yellow
     AMZN: "#a78bfa", // Purple
-  };
-
-  // Format timestamp for X axis label (e.g., "17:30:10")
-  const formatXAxis = (tickItem: string) => {
-    try {
-      const date = new Date(tickItem);
-      if (isNaN(date.getTime())) return tickItem;
-      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    } catch {
-      return tickItem;
-    }
-  };
-
-  // Custom tooltips
-  const CustomTooltip = ({ active, payload, label }: any) => {
-    if (active && payload && payload.length) {
-      const timeStr = formatXAxis(label);
-      return (
-        <div className="glass rounded-xl p-4 shadow-xl border border-white/10 text-xs flex flex-col space-y-1.5 min-w-[150px]">
-          <span className="text-text-muted font-mono">{timeStr}</span>
-          {payload.map((p: any) => (
-            <div key={p.name} className="flex items-center justify-between space-x-4">
-              <span className="font-semibold text-text-secondary" style={{ color: p.color || p.fill }}>
-                {p.name}:
-              </span>
-              <span className="font-mono font-bold text-white">
-                {p.name.includes("Price") ? `$${p.value.toFixed(2)}` : p.value.toFixed(4)}
-              </span>
-            </div>
-          ))}
-        </div>
-      );
-    }
-    return null;
   };
 
   return (

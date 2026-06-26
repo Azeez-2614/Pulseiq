@@ -2,7 +2,7 @@
 
 import React from "react";
 import { motion } from "framer-motion";
-import { Scale, HelpCircle } from "lucide-react";
+import { Scale } from "lucide-react";
 
 interface CorrelationInfo {
   correlation: number;

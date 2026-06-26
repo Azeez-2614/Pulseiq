@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 from api.main import app
 
 client = TestClient(app)
+API_HEADERS = {"X-API-Key": "pulseiq-dev-key-change-in-production"}
 
 def test_health_endpoint():
     response = client.get("/health")
@@ -14,7 +15,7 @@ def test_scores_endpoint(mock_get_all):
     mock_get_all.return_value = {
         "AAPL": {"symbol": "AAPL", "sentiment_score": 0.25, "price": 180.0}
     }
-    response = client.get("/scores")
+    response = client.get("/scores", headers=API_HEADERS)
     assert response.status_code == 200
     assert "AAPL" in response.json()
     assert response.json()["AAPL"]["sentiment_score"] == 0.25
@@ -26,42 +27,36 @@ def test_symbol_scores_endpoint(mock_get_cached):
         "sentiment_score": -0.15,
         "price": 250.0
     }
-    response = client.get("/scores/tsla")
+    response = client.get("/scores/tsla", headers=API_HEADERS)
     assert response.status_code == 200
     assert response.json()["symbol"] == "TSLA"
     assert response.json()["sentiment_score"] == -0.15
 
-@patch("api.main.get_session")
-def test_articles_endpoint(mock_get_session):
-    # Setup mock PostgreSQL session and query
-    mock_session = MagicMock()
-    mock_query = MagicMock()
-    
-    mock_session.query.return_value = mock_query
-    mock_query.order_by.return_value = mock_query
-    mock_query.limit.return_value = mock_query
-    
-    # Mock some DB scores
-    mock_score = MagicMock()
-    mock_score.headline = "Test Headline"
-    mock_score.source = "Test Source"
-    mock_score.published_at = None
-    mock_score.symbol = "AAPL"
-    mock_score.raw_scores = {"compound": 0.3}
-    
-    mock_query.all.return_value = [mock_score]
-    mock_get_session.return_value = mock_session
-    
-    response = client.get("/articles")
+@patch("api.main.get_recent_articles")
+def test_articles_endpoint(mock_get_recent):
+    mock_get_recent.return_value = [
+        {
+            "title": "Test Headline",
+            "source": "Test Source",
+            "published_at": None,
+            "symbol": "AAPL",
+            "sentiment": {"compound": 0.3}
+        }
+    ]
+    response = client.get("/articles", headers=API_HEADERS)
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["title"] == "Test Headline"
     assert response.json()[0]["sentiment"]["compound"] == 0.3
 
-@patch("api.main.pipeline_job")
-def test_pipeline_trigger_endpoint(mock_pipeline_job):
-    response = client.post("/pipeline/trigger")
+@patch("api.main.run_pipeline")
+def test_pipeline_trigger_endpoint(mock_run_pipeline):
+    mock_task = MagicMock()
+    mock_task.id = "test-task-id"
+    mock_run_pipeline.delay.return_value = mock_task
+
+    response = client.post("/pipeline/trigger", headers=API_HEADERS)
     assert response.status_code == 200
     assert response.json()["status"] == "pipeline triggered"
-    # Ensure BackgroundTasks executed it
-    mock_pipeline_job.assert_called_once()
+    assert response.json()["task_id"] == "test-task-id"
+    mock_run_pipeline.delay.assert_called_once()

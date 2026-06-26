@@ -10,18 +10,24 @@ dependencies = [
     "requests",
     "praw",
     "fastapi",
-    "uvicorn",
-    "sqlalchemy",
+    "uvicorn[standard]",
+    "sqlalchemy[asyncio]",
     "redis",
     "pymongo",
-    "apscheduler",
+    "motor",
+    "asyncpg",
+    "celery[redis]",
+    "flower",
+    "slowapi",
+    "python-jose[cryptography]",
+    "python-multipart",
+    "alembic",
+    "feedparser",
     "pandas",
     "scipy",
-    "streamlit",
     "transformers",
     "torch",
     "python-dotenv",
-    "psycopg2-binary",
     "plotly"
 ]
 
@@ -44,4 +50,3 @@ dev = [
 pythonpath = [
   "."
 ]
-
