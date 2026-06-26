@@ -1,17 +1,16 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timedelta
 import pandas as pd
 import yfinance as yf
 import asyncio
-import json
 import logging
-import sys
 
 # Import local layers
 from storage.redis_client import get_redis_client, get_all_scores, get_cached_score, CHANNEL
 from storage.postgres_client import get_session, SentimentScore
 from processing.correlator import compute_correlation
+from processing.pipeline import pipeline_job, wait_for_databases
 import config
 
 # Setup logging
@@ -197,6 +196,12 @@ def get_latest_articles(limit: int = 10):
         logger.error(f"Mock generation failed in /articles: {mock_err}")
         return []
 
+@app.post("/pipeline/trigger")
+def trigger_pipeline(background_tasks: BackgroundTasks):
+    """Triggers the ingestion and processing pipeline as an asynchronous background task."""
+    background_tasks.add_task(pipeline_job)
+    return {"status": "pipeline triggered", "timestamp": datetime.utcnow().isoformat()}
+
 # WebSocket Broadcast Layer
 
 class WebSocketBroadcaster:
@@ -259,10 +264,13 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         broadcaster.disconnect(websocket)
 
-# Start background pubsub broadcaster when FastAPI starts up
+# Start background database checker and pubsub broadcaster when FastAPI starts up
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(broadcaster.broadcast_from_redis())
+    # Run database readiness checks in a background executor thread to prevent blocking the event loop
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, wait_for_databases)
 
 if __name__ == "__main__":
     import uvicorn

@@ -68,7 +68,7 @@ def fetch_current_prices() -> list[dict]:
             else:
                 # If yfinance returns empty data, use the mock generator fallback
                 results.append(get_mock_price(symbol))
-        except Exception as e:
+        except Exception:
             # On network errors or rate-limits, fall back to mock data
             results.append(get_mock_price(symbol))
             

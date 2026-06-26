@@ -97,7 +97,7 @@ def fetch_headlines() -> list[dict]:
                     "query_term": term,
                     "fetched_at": datetime.utcnow().isoformat()
                 })
-        except Exception as e:
+        except Exception:
             # If network request fails, we skip that term (or we could return mocks)
             pass
             

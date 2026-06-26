@@ -92,7 +92,7 @@ def fetch_reddit_posts() -> list[dict]:
                         # Convert UTC timestamp to ISO format string
                         "created_at": datetime.utcfromtimestamp(post.created_utc).isoformat()
                     })
-    except Exception as e:
+    except Exception:
         # print(f"Error fetching from Reddit API: {e}. Falling back to mock data.")
         return generate_mock_reddit_posts()
         
