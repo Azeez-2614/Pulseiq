@@ -50,11 +50,11 @@ export function useWebSocket(url: string) {
       };
 
       wsRef.current.onerror = (error) => {
-        console.error('WebSocket error:', error);
+        console.warn('WebSocket connection not available:', error);
         wsRef.current?.close();
       };
     } catch (err) {
-      console.error('WebSocket setup failure:', err);
+      console.warn('WebSocket setup failure:', err);
       if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
       reconnectTimeout.current = setTimeout(() => connectRef.current(), 3000);
     }

@@ -95,7 +95,7 @@ export default function Dashboard() {
         setCorrelations(correlationRes.correlations);
       }
     } catch (err) {
-      console.error("Failed to load dashboard data:", err);
+      console.warn("Failed to load dashboard data (backend offline):", err);
     }
   };
 
@@ -133,7 +133,7 @@ export default function Dashboard() {
         setTimeout(() => setTriggerStatus(null), 4000);
       }
     } catch (err) {
-      console.error("Pipeline trigger error:", err);
+      console.warn("Pipeline trigger error:", err);
       setTriggerStatus("Network error connecting to API.");
       setTimeout(() => setTriggerStatus(null), 4000);
     } finally {
